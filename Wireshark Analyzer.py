@@ -1,58 +1,57 @@
 import pyshark
-import pandas as pd
-import plotly.express as px
-from collections import Counter
 
-# Load the pcap file
-cap = pyshark.FileCapture(r'C:\Users\User\Downloads\capture_file.pcap')
+# Load the PCAP file
+capture = pyshark.FileCapture(r'C:\Users\User\Downloads\capture.pcap')
 
-# Step 1: Collect packet types
-packet_types = Counter()
-ip_stats = Counter()
-ftp_packets = 0
-icmp_port_scans = 0
-threat_list = []
+# Initialize the threat list to hold detected threats
+threatlist = []
 
-for packet in cap:
-    # Count packet types
-    if hasattr(packet, 'highest_layer'):
-        packet_types[packet.highest_layer] += 1
+# Function to add suspicious IPs to the threat list if they meet a certain threshold
+def add_to_threatlist(ip, reason):
+    threatlist.append(f"Suspicious activity from {ip}: {reason}")
 
-    # Count IP statistics
-    if hasattr(packet, 'ip'):
-        src_ip = packet.ip.src
-        dst_ip = packet.ip.dst
-        ip_stats[(src_ip, dst_ip)] += 1
+# Function to detect FTP traffic
+def detect_ftp_traffic(packets):
+    for packet in packets:
+        if hasattr(packet, 'ftp'):
+            src_ip = packet.ip.src
+            dst_ip = packet.ip.dst
+            add_to_threatlist(src_ip, f"FTP traffic detected to {dst_ip}")
 
-    # Count FTP packets
-    if hasattr(packet, 'ftp'):
-        ftp_packets += 1
+# Function to detect repeated failed connections (SYN flood attempts)
+def detect_failed_connections(packets, threshold=5):
+    failed_connections = {}
+    
+    for packet in packets:
+        if hasattr(packet, 'tcp') and packet.tcp.flags_syn == '1' and packet.tcp.flags_ack == '0':  # Check for SYN but no ACK
+            src_dst_pair = (packet.ip.src, packet.ip.dst)
+            failed_connections[src_dst_pair] = failed_connections.get(src_dst_pair, 0) + 1
 
-    # Check for ICMP port scans 
-    if hasattr(packet, 'icmp'):
-        icmp_port_scans += 1  
+            # Add to threat list if it exceeds threshold
+            if failed_connections[src_dst_pair] > threshold:
+                add_to_threatlist(packet.ip.src, f"Repeated failed connections to {packet.ip.dst}")
 
-# Step 3: Create the DataFrame 
-df = pd.DataFrame(ip_stats.items(), columns=['IP Pair', 'Count'])
-df = df.dropna()  # Drop any NaN values, if present
-df['IP Pair'] = df['IP Pair'].apply(lambda x: f"{x[0]} -> {x[1]}")  # Convert to string format
-df = df.reset_index(drop=True)  # Reset index
+# Function to detect ICMP scan
+def detect_icmp_scan(packets, threshold=50):
+    icmp_count = {}
+    
+    for packet in packets:
+        if hasattr(packet, 'icmp'):
+            src_ip = packet.ip.src
+            icmp_count[src_ip] = icmp_count.get(src_ip, 0) + 1
+            
+            # If ICMP packet count from a single IP exceeds threshold, consider it a scan
+            if icmp_count[src_ip] > threshold:
+                add_to_threatlist(src_ip, f"Potential ICMP scan detected with {icmp_count[src_ip]} packets")
 
-# Print the DataFrame 
-print(df.head())
+# Run all detection functions on the capture
+detect_ftp_traffic(capture)
+detect_failed_connections(capture, threshold=5)
+detect_icmp_scan(capture, threshold=50)
 
-# Step 4: Data Visualization using Plotly
-fig = px.bar(df, x='IP Pair', y='Count', title='IP Communication Statistics', 
-             labels={'IP Pair': 'IP Pair', 'Count': 'Count'},
-             hover_data=['Count'])
-fig.update_layout(xaxis_tickangle=-45)  # Rotate x labels 
-fig.show()  # Show the interactive plot
-
-# Step 5: Print the threat list
-print("Threat List:", threat_list)
-
-# Summary statistics
-print("Packet Types:", packet_types)
-print("IP Statistics:", ip_stats)
-print("FTP Packets:", ftp_packets)
-print("ICMP Port Scans:", icmp_port_scans)
+# Print out the detected threats
+if len(threatlist) > 0:
+    for threat in threatlist:
+        print(threat)
+else:
+    print("No threats detected.")
